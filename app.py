@@ -1,6 +1,8 @@
 from flask import Flask, request, jsonify
-import google.generativeai as genai
 import os
+import time
+import uuid
+import google.generativeai as genai
 
 app = Flask(__name__)
 
@@ -63,42 +65,70 @@ class GeminiFlashNameProcessor:
 # Initialize processor with API key
 name_processor = GeminiFlashNameProcessor(os.environ.get('GOOGLE_AI_API_KEY'))
 
-@app.route('/v1/chat/completions', methods=['POST'])
-def process_name_endpoint():
-    """
-    Endpoint to match OpenAI chat completions API format
-    """
-    try:
-        # Extract name from request
-        data = request.json
-        messages = data.get('messages', [])
-        
-        # Find the name in the last message
-        raw_name = messages[-1]['content'] if messages else ''
-        
-        # Process the name
-        processed_name = name_processor.process_name(raw_name)
-        
-        # Return in OpenAI API compatible format
-        return jsonify({
-            'choices': [{
-                'message': {
-                    'content': processed_name
-                }
-            }]
-        })
-    
-    except Exception as e:
-        return jsonify({
-            'error': str(e)
-        }), 500
-
 @app.route('/', methods=['GET'])
 def health_check():
     """
     Simple health check endpoint
     """
     return jsonify({"status": "healthy"}), 200
+
+@app.route('/v1/chat/completions', methods=['POST'])
+def process_name_endpoint():
+    """
+    Endpoint to match OpenAI chat completions API format
+    """
+    try:
+        # Extract request data
+        data = request.json
+        
+        # Extract the last message content
+        messages = data.get('messages', [])
+        raw_name = messages[-1]['content'] if messages else ''
+        
+        # Process the name
+        processed_name = name_processor.process_name(raw_name)
+        
+        # Construct response in OpenAI API format
+        response = {
+            "id": f"chatcmpl-{str(uuid.uuid4())}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": "gemini-2.0-flash",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": processed_name,
+                    "refusal": None,
+                    "annotations": []
+                },
+                "logprobs": None,
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": len(raw_name.split()),
+                "completion_tokens": len(processed_name.split()),
+                "total_tokens": len(raw_name.split()) + len(processed_name.split()),
+                "prompt_tokens_details": {
+                    "cached_tokens": 0,
+                    "audio_tokens": 0
+                },
+                "completion_tokens_details": {
+                    "reasoning_tokens": 0,
+                    "audio_tokens": 0,
+                    "accepted_prediction_tokens": 0,
+                    "rejected_prediction_tokens": 0
+                }
+            },
+            "service_tier": "default"
+        }
+        
+        return jsonify(response)
+    
+    except Exception as e:
+        return jsonify({
+            "error": str(e)
+        }), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
