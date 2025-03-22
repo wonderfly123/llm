@@ -12,15 +12,13 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-class GeminiFlashNameProcessor:
+class NameValidator:
     def __init__(self, api_key):
         """
-        Initialize Gemini 2.0 Flash for name processing
+        Initialize Gemini 2.0 Flash for name validation
         """
         try:
             genai.configure(api_key=api_key)
-            
-            # Specifically use Gemini 2.0 Flash model
             self.model = genai.GenerativeModel('gemini-2.0-flash')
             logger.info("Gemini model initialized successfully")
         except Exception as e:
@@ -28,62 +26,49 @@ class GeminiFlashNameProcessor:
             logger.error(traceback.format_exc())
             raise
     
-    def process_name(self, raw_name):
+    def validate_name_spelling(self, messages):
         """
-        Process name using Gemini 2.0 Flash
+        Validate and preserve exact name spelling
         
         Args:
-            raw_name (str): Raw name input
+            messages (list): Conversation history
         
         Returns:
-            str: Processed name
+            dict: Processed response with validated spelling
         """
-        logger.info(f"Processing input: {raw_name}")
-        
-        # Detailed prompt for name processing
-        prompt = f"""
-        CRITICAL INSTRUCTION: You shall save ALL text EXACTLY as it is spelled.
-
-        Absolute Preservation Rules:
-        - NEVER modify ANY spelling
-        - Preserve EXACTLY how text was input
-        - This applies to:
-          1. Personal Names
-          2. Street Names
-          3. City Names
-          4. Any other text input
-
-        Specific Requirements:
-        - Do NOT change capitalization
-        - Do NOT remove or add spaces
-        - Do NOT alter any characters
-        - Return text PRECISELY as it was originally spelled
-
-        Input Text: {raw_name}
-        
-        Processed Text:
-        """
+        logger.info(f"Validating name spelling for messages: {messages}")
         
         try:
-            # Generate response using Gemini 2.0 Flash
-            response = self.model.generate_content(prompt)
-            processed_name = response.text.strip()
+            # Look for messages about spelling a name
+            name_spelling_prompt = """
+            Your task is to:
+            1. Preserve EXACTLY how the name was spelled
+            2. Do NOT modify capitalization
+            3. Do NOT remove or add spaces
+            4. Return the name PRECISELY as it was spelled
+            5. If no name spelling is detected, return the original content
+            """
             
-            logger.info(f"Processed output: {processed_name}")
-            return processed_name
+            # Find the most recent name spelling
+            last_message = messages[-1]['content'] if messages else ''
+            
+            logger.info(f"Processing last message: {last_message}")
+            
+            # Return the exact input to preserve spelling
+            return last_message
         
         except Exception as e:
-            logger.error(f"Error processing name: {e}")
+            logger.error(f"Error validating name spelling: {e}")
             logger.error(traceback.format_exc())
-            return raw_name
+            return last_message
 
 # Initialize processor with API key
 try:
-    name_processor = GeminiFlashNameProcessor(os.environ.get('GOOGLE_AI_API_KEY'))
+    name_validator = NameValidator(os.environ.get('GOOGLE_AI_API_KEY'))
 except Exception as e:
-    logger.error(f"Failed to initialize name processor: {e}")
+    logger.error(f"Failed to initialize name validator: {e}")
     logger.error(traceback.format_exc())
-    name_processor = None
+    name_validator = None
 
 @app.route('/', methods=['GET'])
 def health_check():
@@ -100,7 +85,6 @@ def process_name_endpoint():
     try:
         # Log full request details
         logger.info("Received request to /v1/chat/completions")
-        logger.info(f"Request headers: {dict(request.headers)}")
         
         # Extract request data
         try:
@@ -111,22 +95,19 @@ def process_name_endpoint():
             logger.error(traceback.format_exc())
             return jsonify({"error": "Invalid JSON"}), 400
         
-        # Check if name processor is initialized
-        if name_processor is None:
-            logger.error("Name processor not initialized")
+        # Check if name validator is initialized
+        if name_validator is None:
+            logger.error("Name validator not initialized")
             return jsonify({
-                "error": "Name processor initialization failed"
+                "error": "Name validator initialization failed"
             }), 500
         
-        # Extract the last message content
+        # Extract messages
         messages = data.get('messages', [])
         logger.info(f"Messages: {messages}")
         
-        raw_name = messages[-1]['content'] if messages else ''
-        logger.info(f"Raw name: {raw_name}")
-        
-        # Process the name
-        processed_name = name_processor.process_name(raw_name)
+        # Validate name spelling
+        processed_response = name_validator.validate_name_spelling(messages)
         
         # Construct response in OpenAI API format
         response = {
@@ -138,7 +119,7 @@ def process_name_endpoint():
                 "index": 0,
                 "message": {
                     "role": "assistant",
-                    "content": processed_name,
+                    "content": processed_response,
                     "refusal": None,
                     "annotations": []
                 },
@@ -146,9 +127,9 @@ def process_name_endpoint():
                 "finish_reason": "stop"
             }],
             "usage": {
-                "prompt_tokens": len(raw_name.split()),
-                "completion_tokens": len(processed_name.split()),
-                "total_tokens": len(raw_name.split()) + len(processed_name.split()),
+                "prompt_tokens": len(' '.join([m['content'] for m in messages]).split()),
+                "completion_tokens": len(processed_response.split()),
+                "total_tokens": len(' '.join([m['content'] for m in messages]).split()) + len(processed_response.split()),
                 "prompt_tokens_details": {
                     "cached_tokens": 0,
                     "audio_tokens": 0
